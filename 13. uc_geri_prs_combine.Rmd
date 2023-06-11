@@ -1,0 +1,79 @@
+---
+title: "Combine all '.sscores' file for GeRI participants and create a single PRS variable to run analysis"
+output: html_notebook
+Author: "Pooja Middha"
+Date: "Feb 5, 2023"
+---
+
+Aim: Combine files obtained from plink (a0 and a1 and per chromosome) to create a composite UC-PRS score for each GeRI participant to run downstream analysis 
+
+```{r}
+# Libraries
+library(data.table)
+library(tidyverse)
+
+options(stringsAsFactors = F)
+
+# Project directory
+projdir <- "/zivlab/data3/pmiddha/Proj_GeRI_GI-irAEs/"
+projdir
+```
+
+Import and combine all plink result files (.sscore files)
+
+```{r}
+# Import all chromosomes with a0_a1 suffix and combine all scores into one file 
+chr1 <- fread(paste0(projdir, "PRS_GeRI/Results/UC/uc_geri_prs_a0_chr1.sscore"))
+colnames(chr1)[1] <- "FID"
+colnames(chr1)[3:6] <- paste(colnames(chr1)[3:6],"chr1",sep="_")
+chr <- chr1
+rm(chr1)
+
+for (i in 2:22) {
+  a0_a1 <- fread(paste0(projdir, "PRS_GeRI/Results/UC/uc_geri_prs_a0_chr", i, ".sscore"))
+  colnames(a0_a1)[1] <- "FID"
+  colnames(a0_a1)[3:6] <- paste0(colnames(a0_a1)[3:6],sep="_", "chr", i)
+  chr <- merge(chr, a0_a1, by = c("FID","IID"))
+  rm(a0_a1)
+}
+
+# Final file with IID and scores from each chromosomes
+chr_a0 <- chr %>% dplyr::select(IID, contains("SCORE1_SUM_"))
+rm(chr)
+```
+
+Repeat the above format but with a1 .sscore files
+
+```{r}
+# Import all chromosomes with a0_a1 suffix and combine all scores into one file 
+achr1 <- fread(paste0(projdir, "PRS_GeRI/Results/UC/uc_geri_prs_a1_chr1.sscore"))
+colnames(achr1)[1] <- "FID"
+colnames(achr1)[3:6] <- paste(colnames(achr1)[3:6],"achr1",sep="_")
+achr <- achr1
+rm(achr1)
+
+for (i in 2:22) {
+  a1_a0 <- fread(paste0(projdir, "PRS_GeRI/Results/UC/uc_geri_prs_a1_chr", i, ".sscore"))
+  colnames(a1_a0)[1] <- "FID"
+  colnames(a1_a0)[3:6] <- paste0(colnames(a1_a0)[3:6],sep="_", "achr", i)
+  achr <- merge(achr, a1_a0, by = c("FID","IID"))
+  rm(a1_a0)
+}
+
+# Final file with IID and scores from each chromosomes
+chr_a1 <- achr %>% dplyr::select(IID, contains("SCORE1_SUM_"))
+rm(achr)
+```
+
+Final step to get UC-PRS for GeRI cohort participants: Add all these per chromosome (a0/a1) scores
+
+```{r}
+# Merge both file sand sum the scores to get a PRS file with IID
+combdat <- merge(chr_a0, chr_a1, by = "IID")
+combdat$prs <- rowSums(combdat[,2:ncol(combdat)], na.rm = T) # OR apply(combdat[,2:45], 1, sum)
+hist(combdat$prs)
+
+prsdat <- combdat %>% dplyr::select(IID, prs)
+write.table(prsdat, file = paste0(projdir, "PRS_GeRI/Results/UC/geri_uc_prs.txt"), quote = F, sep = "\t", row.names = F)
+```
+

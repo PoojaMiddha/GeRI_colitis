@@ -1,0 +1,228 @@
+---
+title: "HR association between UC-PRS and colitis adverse event in GeRI cohort"
+output: html_notebook
+Author: "Pooja Middha"
+Date: "Feb 15, 2023"
+---
+
+Aim: Run Cox proportional hazard analysis between UC-PRS and GI adverse event phenotype in GeRI
+
+
+```{r}
+# Load Library
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(pROC)
+library(ggrepel)
+library(survival)
+library(ggpubr)
+
+options(stringsAsFactors = F)
+options(scipen = 999)
+
+# Project directory
+proj_dir <- "~/OneDrive - University of California, San Francisco/Proj_GeRI_GI-irAEs/"
+proj_dir
+```
+
+Load the GeRI phenotype data and PRS data
+
+```{r}
+# Pheno data
+pheno <- fread(paste0(proj_dir, 
+                      "Data/combined_allsites_colitis_pheno_data_with_colitis_severity_2023-02-15.txt"))
+pheno <- pheno[,-1]
+
+# PRS data 
+prs <- fread(paste0(proj_dir, "Results/UC/geri_uc_prs.txt"))
+
+# PC data
+pc <- fread(paste0(proj_dir, "Data/pca_allchr_pruned.eigenvec"))
+pc <- pc[,-1]
+
+# Combine pheno and pc data
+geri_pheno_pc <- left_join(pheno, pc, by = "IID") 
+geri_prs_pc <- left_join(geri_pheno_pc, prs, by = "IID")
+```
+
+Cox proportional hazards model of UC-PRS and GI-irAE (UNADJUSTED MODEL)
+
+```{r}
+# Cox proportional model (UNADJUSTED)
+unadj_cox <- coxph(Surv(Time_to_colitis, Colitis) ~ prs, data = geri_prs_pc)
+summary(unadj_cox)
+unadj_cox_df <- data.frame(exp(cbind(HR = coef(unadj_cox), confint(unadj_cox))))
+unadj_cox_df$p <- round(coef(summary(unadj_cox))[,5], digits = 5)
+unadj_cox_df$var <- rownames(unadj_cox_df)
+colnames(unadj_cox_df) <- c("HR", "LCI", "UCI", "p", "var")
+
+# Save unadjusted cox model results 
+write.csv(unadj_cox_df, file = paste0(proj_dir, "Results/UC/unadjusted_PRS_cox_regression.csv"), 
+          row.names = F)
+```
+Cox proportional hazards model of UC-PRS and GI-irAE (ADJUSTED MODEL - AGE, BIOLOGICAL GENDER, PCs)
+
+```{r}
+# Cox proportional model (ADJUSTED)
+adj_cox <- coxph(Surv(Time_to_colitis, Colitis) ~ prs + Age + female + histo_ADC + histo_SQCLC + msk + 
+                   ucsf + pmcc + combination_therapy + PC1 + PC2 + PC3 + PC4 + PC5, data = geri_prs_pc)
+summary(adj_cox)
+adj_cox_df <- data.frame(exp(cbind(HR = coef(adj_cox), confint(adj_cox))))
+adj_cox_df$p <- round(coef(summary(adj_cox))[,5], digits = 5)
+adj_cox_df$var <- rownames(adj_cox_df)
+colnames(adj_cox_df) <- c("HR", "LCI", "UCI", "p","var")
+
+# Save unadjusted cox model results 
+write.csv(adj_cox_df, file = paste0(proj_dir, "Results/UC/adjusted_PRS_cox_regression.csv"), 
+          row.names = F)
+```
+
+Plot adjusted and unadjusted Cox model together in one figure
+
+```{r}
+# Unadjusted and adjusted model plots
+unadj_hr <- unadj_cox_df
+unadj_hr$model <- "UNADJ"
+adj_hr <- adj_cox_df[1,]
+adj_hr$model <- "ADJ"
+
+# Rbind above two data frames
+comb_hr <- bind_rows(unadj_hr, adj_hr)
+
+# Plot both ORs side by side
+hr_p <- ggplot(comb_hr, aes(x=HR, y=model)) + 
+  geom_errorbarh(aes(xmin=LCI, xmax=UCI), size=1, height=.1, color="#E69F00") + 
+  geom_point(size=2, color="#0072B2") + 
+  scale_y_discrete(labels = c("Adjusted", "Unadjusted")) +
+  theme_bw() + 
+  theme(panel.grid = element_blank()) + 
+  labs(x="Model", y="HR (95% CI)") + 
+  geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") 
+
+hr_p
+
+# Export the plot
+jpeg(paste0(proj_dir, "Results/UC/HRplot_adjusted_unadjusted_cox_regression.jpeg"), width=4450, height=(2800), res=350)
+hr_p
+dev.off()
+```
+
+# STANDARDIZED UC-PRS AND RELATED ANALYSIS
+Standardize PRS by unit standard deviation of controls
+
+```{r}
+# Standard deviation of UC-PRS in contorls
+#sd_con_prs <- sd(gi_control$prs)
+
+# Divide PRS of all individuals by SD of PRS from controls
+#geri_prs_pc$sPRS <- as.numeric(geri_prs_pc$prs/sd_con_prs)
+#gi_case$sPRS <- as.numeric(gi_case$prs/sd_con_prs)
+#gi_control$sPRS <- as.numeric(gi_control$prs/sd_con_prs)
+```
+
+Standardize with mean 0 and standard deviation 1
+
+```{r}
+# Separate GI adverse event cases and controls
+gi_case <- subset(geri_prs_pc, geri_prs_pc$Colitis == 1)
+gi_control <- subset(geri_prs_pc, geri_prs_pc$Colitis == 0)
+
+# Compute mean PRS from RAW PRS for cases and controls
+case_mean_prs <- gi_case %>% pull(prs) %>% mean() %>% signif(6)
+control_mean_prs <- gi_control %>% pull(prs) %>% mean() %>% signif(6)
+
+# New standardized PRS
+geri_prs_pc$sPRS <- as.numeric((geri_prs_pc$prs - mean(gi_control$prs))/sd(gi_control$prs))
+```
+
+Cox proportional hazards model of sUC-PRS and GI-irAE (UNADJUSTED MODEL)
+
+```{r}
+# Cox proportional model (UNADJUSTED)
+sunadj_cox <- coxph(Surv(Time_to_colitis, Colitis) ~ sPRS, data = geri_prs_pc)
+summary(sunadj_cox)
+sunadj_cox_df <- data.frame(exp(cbind(HR = coef(sunadj_cox), confint(sunadj_cox))))
+sunadj_cox_df$p <- round(coef(summary(sunadj_cox))[,5], digits = 5)
+sunadj_cox_df$var <- rownames(sunadj_cox_df)
+colnames(sunadj_cox_df) <- c("HR", "LCI", "UCI", "p", "var")
+
+# Save unadjusted cox model results 
+write.csv(sunadj_cox_df, file = paste0(proj_dir, "Results/UC/unadjusted_sPRS_cox_regression.csv"), 
+          row.names = F)
+```
+Cox proportional hazards model of sUC-PRS and GI-irAE (ADJUSTED MODEL - AGE, BIOLOGICAL GENDER, PCs)
+
+```{r}
+# Cox proportional model (ADJUSTED)
+sadj_cox <- coxph(Surv(Time_to_colitis, Colitis) ~ sPRS + Age + female + histo_ADC + histo_SQCLC + msk + 
+                   ucsf + pmcc + combination_therapy + PC1 + PC2 + PC3 + PC4 + PC5, data = geri_prs_pc)
+summary(sadj_cox)
+sadj_cox_df <- data.frame(exp(cbind(HR = coef(sadj_cox), confint(sadj_cox))))
+sadj_cox_df$p <- round(coef(summary(sadj_cox))[,5], digits = 5)
+sadj_cox_df$var <- rownames(sadj_cox_df)
+colnames(sadj_cox_df) <- c("HR", "LCI", "UCI", "p","var")
+
+# Save unadjusted cox model results 
+write.csv(sadj_cox_df, file = paste0(proj_dir, "Results/UC/adjusted_sPRS_cox_regression.csv"), 
+          row.names = F)
+```
+
+Plot adjusted and unadjusted Cox model together in one figure
+
+```{r}
+# Unadjusted and adjusted model plots
+sunadj_hr <- sunadj_cox_df
+sunadj_hr$model <- "UNADJ"
+sadj_hr <- sadj_cox_df[1,]
+sadj_hr$model <- "ADJ"
+
+# Rbind above two data frames
+scomb_hr <- bind_rows(sunadj_hr, sadj_hr)
+
+# Plot both ORs side by side
+shr_p <- ggplot(scomb_hr, aes(x=HR, y=model)) + 
+  geom_errorbarh(aes(xmin=LCI, xmax=UCI), size=1, height=.1, color="#E69F00") + 
+  geom_point(size=2, color="#0072B2") + 
+  geom_label_repel(aes(label=round(HR, digits = 2)), colour="black", segment.colour="black") + 
+  scale_y_discrete(labels = c("Adjusted", "Unadjusted")) +
+  theme_bw() + 
+  theme(panel.grid = element_blank()) + 
+  labs(x="Model", y="HR (95% CI)") + 
+  geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") 
+
+shr_p
+
+# Export the plot
+jpeg(paste0(proj_dir, "Results/UC/HRplot_adjusted_unadjusted_cox_regression_standardized_PRS.jpeg"), width=4450, height=(2800), res=350)
+shr_p
+dev.off()
+```
+
+Plot HRs from non-standardized and standardized PRS in one plot from both models
+
+```{r}
+# Rbind results from all 4 models (standardized and non-standardized unadjusted and adjusted models)
+sall_hr <- bind_rows(comb_hr, scomb_hr)
+sall_hr$var[1:2] <- "PRS"
+
+# Plot both ORs side by side
+all_hr_p <- ggplot(sall_hr, aes(x=HR, y=model)) + 
+             geom_errorbarh(aes(xmin=LCI, xmax=UCI), size=1, height=.1, color="#E69F00") + 
+             geom_point(size=2, color="#0072B2") + 
+             geom_label_repel(aes(label=round(HR, digits = 2)), colour="black", segment.colour="black") + 
+             scale_y_discrete(labels = c("Adjusted", "Unadjusted")) +
+             facet_wrap(~var) + 
+             theme_bw() + 
+             theme(panel.grid = element_blank()) + 
+             labs(x="HR (95% CI)", y="Model") + 
+             geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") 
+
+all_hr_p
+
+# Export the plot
+jpeg(paste0(proj_dir, "Results/UC/HRplot_adjusted_unadjusted_standardized_nonstandardized_PRS.jpeg"), width = 4450, height = 2800, res = 350)
+all_hr_p
+dev.off()
+```
