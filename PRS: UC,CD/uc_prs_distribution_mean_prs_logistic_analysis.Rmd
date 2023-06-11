@@ -1,0 +1,377 @@
+---
+title: "Association between UC-PRS and UC phenotype in UK Biobank"
+output: html_notebook
+Author: "Pooja Middha"
+Date: "Oct 12, 2022"
+---
+
+Aim: This script has following aims: 
+1) Check the distribution of UC-PRS in UC cases and controls in UKBB
+2) Compare mean UC-PRS between UC cases and controls
+3) Run association analysis between UC-PRS and phenotype in UKBB 
+
+```{r}
+# Load Library
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(cowplot)
+library(pROC)
+library(ggrepel)
+library(ggpubr)
+
+options(stringsAsFactors = F)
+```
+
+Load UC PRS scores calculated by Plink for individuals 
+
+```{r}
+# PRS data 
+uk_uc_prs <- fread("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/uc_ukb_prs.sscore", header = T)
+colnames(uk_uc_prs)[1] <- "FID"
+```
+
+Load UC pheno data 
+
+```{r}
+# Pheno data
+load("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Data/pheno/gi_pheno_final_10112022.Rdata")
+
+# Subset phenotype data to those with PRS score
+uk_uc_phen <- subset(final, final$IID %in% uk_uc_prs$IID)
+rm(final)
+```
+
+Merge genetic and phenotype data
+
+```{r}
+# Merge genetic and phenotype data
+ukb_uc <- merge(uk_uc_phen, uk_uc_prs, by.x = c("FID","IID"), by.y = c("FID","IID"))
+```
+
+Plot distribution of PRS in cases and controls
+
+```{r}
+# Separate UC cases and controls
+uc_case <- subset(ukb_uc, ukb_uc$UC == 1)
+uc_control <- subset(ukb_uc, ukb_uc$UC == 0)
+
+# Compute mean PRS for cases and controls
+case_mean_prs <- uc_case %>% pull(SCORE1_SUM) %>% mean() %>% signif(6)
+control_mean_prs <- uc_control %>% pull(SCORE1_SUM) %>% mean() %>% signif(6)
+
+# Plot PRS distribution in cases and controls in UKBB 
+a <- ggplot(ukb_uc, aes(x=SCORE1_SUM, fill = as.factor(UC), color = as.factor(UC))) +
+            geom_density() + 
+            scale_fill_manual(labels=c("Control", "Case"), values=alpha(c("#00AFBB", "#E7B800"),0.3)) + 
+            scale_color_manual(labels=c("Control", "Case"), values=alpha(c("#00AFBB", "#E7B800"),0.3)) + 
+            theme(panel.grid = element_blank(), 
+                  panel.border = element_blank(), 
+                  plot.margin = margin(0.2, 0.2, 0.1, 0.2, "cm"), # top, right, bottom, left 
+                  legend.position = "bottom") + 
+            guides(fill=guide_legend(title="Case-control status")) +
+            geom_vline(xintercept = case_mean_prs, linetype = "dashed", color = "red") +
+            geom_text(aes(x=case_mean_prs, label=round(case_mean_prs, digits = 2), y=0.1), 
+                      colour="red", angle = 0, hjust = -0.15) +
+            geom_vline(xintercept = control_mean_prs, linetype = "dashed", color = "blue") + 
+            geom_text(aes(x=control_mean_prs, label=round(control_mean_prs, digits = 2), y=0.1), 
+                      colour="blue", angle = 0, hjust = 1.2) +
+            labs(title = "UC-PRS distribution in UKBB", 
+                 x = "UC-PRS",
+                 y = "Density", 
+                 color = "Case-control status") + 
+            scale_y_continuous(expand = expansion (add = 0.004))
+a
+
+# Plot mean PRS and confidence intervals and t.test to test differences in means
+b <- ggviolin(ukb_uc, x = "UC", y = "SCORE1_SUM", fill = "UC",
+              ylab = "UC-PRS", xlab = "Case-Control status", 
+              add = "boxplot", add.params = list(fill = "white")) + 
+              scale_fill_manual(labels = c("Control", "Case"), values=c("#00AFBB", "#E7B800"))+ 
+    stat_compare_means(method = "t.test", label = "p.signif") + 
+    stat_compare_means(method = "t.test", label.y = 5) + 
+    labs(title = "Comparison of mean PRS") + 
+    theme(legend.position = "none")
+b
+
+# Arrange the two plots in a row 
+a2 <- a + theme(legend.position = "none")
+c <- plot_grid(a2, b)
+
+# Extract the legend from one of the plots
+legend <- get_legend(a + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom"))
+
+
+# add the legend to the row we made earlier. Give it one-third of 
+# the width of one plot (via rel_widths).
+d <- plot_grid(c, legend, ncol = 1, rel_heights = c(1, .1))
+d
+
+# Export the plot 
+jpeg("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/UC_PRS_distribution_and_meanPRS_plot.jpeg", width=4450, height=(2800), res=350)
+d
+dev.off()
+```
+
+Association analysis of UC-PRS and UC phenotype (UNADJUSTED MODEL)
+
+```{r}
+# Logistic regression (UNADJUSTED)
+unadj <- glm(UC ~ SCORE1_SUM, data = ukb_uc, family = "binomial")
+summary(unadj)
+unadj_df <- NULL
+unadj_df <- data.frame(exp(cbind(OR = coef(unadj), confint(unadj))))
+unadj_df$p <- coef(summary(unadj))[,4]
+unadj_df$var <- row.names(unadj_df)
+colnames(unadj_df) <- c("OR", "LCI", "UCI", "p", "var")
+
+# Save unadjusted model results 
+write.table(unadj_df, file = "~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/unadjustedprs_logistic_regression.txt", 
+            sep = "\t", quote = F, row.names = F)
+```
+
+Association analysis of UC-PRS and UC phenotype (ADJUSTED MODEL - AGE, BIOLOGICAL GENDER, PCs, GENOTYPING ARRAY)
+
+```{r}
+# Logistic regression (UNADJUSTED)
+adj <- glm(UC ~ SCORE1_SUM + UC_agedx_enrol + sex_self + genotyping.array + PC1 + 
+                PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
+                data = ukb_uc, family = "binomial")
+summary(adj)
+adj_df <- NULL
+adj_df <- data.frame(exp(cbind(OR = coef(adj), confint(adj))))
+adj_df$p <- coef(summary(adj))[,4]
+adj_df$var <- row.names(adj_df)
+colnames(adj_df) <- c("OR", "LCI", "UCI", "p", "var")
+
+# Save the adjusted model results
+write.table(adj_df, file = "~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/adjustedprs_logistic_regression.txt", 
+            sep = "\t", quote = F, row.names = F)
+```
+
+Plot adjusted and unadjusted model together in one figure
+
+```{r}
+# Unadjusted and adjusted model plots
+unadj_or <- unadj_df[-1,]
+unadj_or$model <- "UNADJ"
+adj_or <- adj_df[2,]
+adj_or$model <- "ADJ"
+
+# Rbind above two data frames
+comb_or <- bind_rows(unadj_or, adj_or)
+
+# Plot both ORs side by side
+or_p <- ggplot(comb_or, aes(x=OR, y=model)) + 
+             geom_errorbarh(aes(xmin=LCI, xmax=UCI), size=1, height=.1, color="#E7B800") + 
+             geom_point(size=2, color="#00AFBB") + 
+             scale_y_discrete(labels = c("Adjusted", "Unadjusted")) +
+             theme_bw() + 
+             theme(panel.grid = element_blank()) + 
+             labs(x="Model", y="OR (95% CI)") + 
+             geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") 
+
+or_p
+
+# Export the plot
+jpeg("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/plot_adjusted_unadjusted_regression_OR.jpeg")
+or_p
+dev.off()
+```
+
+```{r}
+# Plot AUROC of actual PRS in cases and controls together
+jpeg("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/auc_ucprs_ukbb.jpeg")
+rocobj <- plot.roc(ukb_uc$UC, ukb_uc$SCORE1_SUM,
+                   main = "AUC-UC", 
+                   percent=FALSE,
+                   ci = TRUE,                  # compute AUC (of AUC by default)
+                   print.auc = TRUE)
+dev.off()
+```
+
+# STANDARDIZED UC-PRS AND RELATED ANALYSIS
+Standardize PRS by unit standard deviation of controls
+
+```{r}
+# Standard deviation of UC-PRS in contorls
+#sd_uc <- as.numeric(sd(uc_control$SCORE1_SUM)) # 1.025009
+
+# Divide PRS of all individuals by SD of PRS from controls
+#ukb_uc$sPRS <- as.numeric(ukb_uc$SCORE1_SUM/sd_uc)
+#uc_case$sPRS <- as.numeric(uc_case$SCORE1_SUM/sd_uc)
+#uc_control$sPRS <- as.numeric(uc_control$SCORE1_SUM/sd_uc)
+```
+
+Standardize where is it centered around 0
+
+```{r}
+# New standardized PRS
+ukb_uc$sPRS <- as.numeric((ukb_uc$SCORE1_SUM - mean(uc_control$SCORE1_SUM))/sd(uc_control$SCORE1_SUM))
+```
+
+Plot distribution of sPRS in cases and controls
+
+```{r}
+# Compute mean sPRS for cases and controls
+#case_mean_sprs <- uc_case %>% pull(sPRS) %>% mean() %>% signif(6)
+#control_mean_sprs <- uc_control %>% pull(sPRS) %>% mean() %>% signif(6)
+
+# Plot PRS distribution in cases and controls in UKBB 
+sa <- ggplot(ukb_uc, aes(x=sPRS, fill = as.factor(UC), color = as.factor(UC))) +
+            geom_density() + 
+            scale_fill_manual(labels=c("Control", "Case"), values=alpha(c("#CC33FF", "#FFCC00"),0.3)) + 
+            scale_color_manual(labels=c("Control", "Case"), values=alpha(c("#CC33FF", "#FFCC00"),0.3)) + 
+            theme(panel.grid = element_blank(), 
+                  panel.border = element_blank(), 
+                  plot.margin = margin(0.2, 0.2, 0.1, 0.2, "cm"), # top, right, bottom, left 
+                  legend.position = "bottom") + 
+            guides(fill=guide_legend(title="Case-control status")) +
+#            geom_vline(xintercept = case_mean_sprs, linetype = "dashed", color = "red") +
+#            geom_text(aes(x=case_mean_sprs, label=round(case_mean_sprs, digits = 2), y=0.1), 
+#                      colour="red", angle = 0, hjust = -0.15) +
+#            geom_vline(xintercept = control_mean_sprs, linetype = "dashed", color = "blue") + 
+#            geom_text(aes(x=control_mean_sprs, label=round(control_mean_sprs, digits = 2), y=0.1), 
+#                      colour="blue", angle = 0, hjust = 1.2) +
+            labs(title = "sUC-PRS distribution in UKBB", 
+                 x = "sUC-PRS",
+                 y = "Density", 
+                 color = "Case-control status") + 
+            scale_y_continuous(expand = expansion (add = 0.004))
+sa
+
+# Plot mean PRS and confidence intervals and t.test to test differences in means
+sb <- ggviolin(ukb_uc, x = "UC", y = "sPRS", fill = "UC",
+              ylab = "sUC-PRS", xlab = "Case-Control status", 
+              add = "boxplot", add.params = list(fill = "white")) + 
+              scale_fill_manual(labels = c("Control", "Case"), values=c("#CC33FF", "#FFCC00"))+ 
+    stat_compare_means(method = "t.test", label = "p.signif") + 
+    stat_compare_means(method = "t.test", label.y = 5) + 
+    labs(title = "Comparison of mean sPRS") + 
+    theme(legend.position = "none")
+sb
+
+# Arrange the two plots in a row 
+sa2 <- sa + theme(legend.position = "none")
+sc <- plot_grid(sa2, sb)
+
+# Extract the legend from one of the plots
+slegend <- get_legend(sa + 
+    guides(color = guide_legend(nrow = 1)) +
+    theme(legend.position = "bottom"))
+
+# add the legend to the row we made earlier. Give it one-third of 
+# the width of one plot (via rel_widths).
+sd <- plot_grid(sc, slegend, ncol = 1, rel_heights = c(1, .1))
+sd
+
+# Export the plot 
+jpeg("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/UC_standardized_PRS_distribution_and_meanPRS_plot.jpeg", width=4450, height=(2800), res=350)
+sd
+dev.off()
+```
+
+Association analysis of sUC-PRS and UC phenotype (UNADJUSTED MODEL)
+
+```{r}
+# Logistic regression (UNADJUSTED)
+sunadj <- glm(UC ~ sPRS, data = ukb_uc, family = "binomial")
+summary(sunadj)
+sunadj_df <- NULL
+sunadj_df <- data.frame(exp(cbind(OR = coef(sunadj), confint(sunadj))))
+sunadj_df$p <- coef(summary(sunadj))[,4]
+sunadj_df$var <- row.names(sunadj_df)
+colnames(sunadj_df) <- c("OR", "LCI", "UCI", "p","var")
+
+# Save unadjusted model results 
+write.table(sunadj_df, file = "~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/unadjusted_standardizedprs_logistic_regression.txt", sep = "\t", quote = F, row.names = F)
+```
+
+Association analysis of sUC-PRS and UC phenotype (ADJUSTED MODEL - AGE, BIOLOGICAL GENDER, PCs, GENOTYPING ARRAY)
+
+```{r}
+# Logistic regression (UNADJUSTED)
+sadj <- glm(UC ~ sPRS + UC_agedx_enrol + sex_self + genotyping.array + PC1 + 
+                 PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
+                 data = ukb_uc, family = "binomial")
+summary(sadj)
+sadj_df <- NULL
+sadj_df <- data.frame(exp(cbind(OR = coef(sadj), confint(sadj))))
+sadj_df$p <- coef(summary(sadj))[,4]
+sadj_df$var <- row.names(sadj_df)
+colnames(sadj_df) <- c("OR", "LCI", "UCI", "p","var")
+
+# Save the adjusted model results
+write.table(sadj_df, file = "~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/adjusted_standardizedprs_logistic_regression.txt", sep = "\t", quote = F, row.names = F)
+```
+
+Plot adjusted and unadjusted model together in one figure
+
+```{r}
+# Unadjusted and adjusted model plots
+sunadj_or <- sunadj_df[-1,]
+sunadj_or$model <- "UNADJ"
+sadj_or <- sadj_df[2,]
+sadj_or$model <- "ADJ"
+
+# Rbind above two data frames
+scomb_or <- bind_rows(sunadj_or, sadj_or)
+
+# Plot both ORs side by side
+sor_p <- ggplot(scomb_or, aes(x=OR, y=model)) + 
+             geom_errorbarh(aes(xmin=LCI, xmax=UCI), size=1, height=.1, color="#FFCC00") + 
+             geom_point(size=2, color="#CC33FF") + 
+             scale_y_discrete(labels = c("Adjusted", "Unadjusted")) +
+             theme_bw() + 
+             theme(panel.grid = element_blank()) + 
+             labs(x="Model", y="OR (95% CI)") + 
+             geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") 
+
+sor_p
+
+# Export the plot
+jpeg("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/plot_adjusted_unadjusted_regression_standardized_OR.jpeg")
+sor_p
+dev.off()
+```
+
+```{r}
+# Plot AUROC of actual PRS in cases and controls together
+jpeg("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/auc_standardizeducprs_ukbb.jpeg")
+rocobj <- plot.roc(ukb_uc$UC, ukb_uc$SCORE1_SUM,
+                   main = "AUC-UC", 
+                   percent=FALSE,
+                   ci = TRUE,                  # compute AUC (of AUC by default)
+                   print.auc = TRUE)
+dev.off()
+```
+
+Plot ORs from non-standardized and standardized PRS in one plot from both models
+
+```{r}
+# Rbind results from all 4 models (standardized and non-standardized unadjusted and adjusted models)
+all_or <- bind_rows(comb_or, scomb_or)
+all_or$var[1:2] <- "PRS"
+
+# Plot both ORs side by side
+all_or_p <- ggplot(all_or, aes(x=OR, y=model)) + 
+             geom_errorbarh(aes(xmin=LCI, xmax=UCI), size=1, height=.1, color="#FFCC00") + 
+             geom_point(size=2, color="#CC33FF") + 
+             geom_label_repel(aes(label=round(OR, digits = 2)), colour="black", segment.colour="black") + 
+             scale_y_discrete(labels = c("Adjusted", "Unadjusted")) +
+             facet_wrap(~var) + 
+             theme_bw() + 
+             theme(panel.grid = element_blank()) + 
+             labs(x="OR (95% CI)", y="Model") + 
+             geom_vline(aes(xintercept = 1), size = .25, linetype = "dashed") 
+
+all_or_p
+
+# Export the plot
+jpeg("~/Box Sync/Proj_GeRI_GI-irAEs/PRS_UKBB/Results/UC/10122022/prs_score/plot_adjusted_unadjusted_standardized_nonstandardized_OR.jpeg", width = 4450, height = 2800, res = 350)
+all_or_p
+dev.off()
+```
+
